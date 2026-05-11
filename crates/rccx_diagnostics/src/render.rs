@@ -48,7 +48,9 @@ fn render_labels(out: &mut String, diag: &Diagnostic, sources: &SourceMap) {
         return;
     }
 
-    let Some(file) = sources.file(primary.span.file) else { return };
+    let Some(file) = sources.file(primary.span.file) else {
+        return;
+    };
     let start = file.line_col(primary.span.lo);
     let _ = writeln!(
         out,
@@ -73,9 +75,13 @@ fn render_label_block(out: &mut String, label: &Label, sources: &SourceMap, gutt
     if label.span.is_dummy() {
         return;
     }
-    let Some(file) = sources.file(label.span.file) else { return };
+    let Some(file) = sources.file(label.span.file) else {
+        return;
+    };
     let start = file.line_col(label.span.lo);
-    let Some(line_text) = file.line_text(start.line) else { return };
+    let Some(line_text) = file.line_text(start.line) else {
+        return;
+    };
 
     let line_num = start.line.to_string();
     let pad_line = " ".repeat(gutter_width.saturating_sub(line_num.len()));
@@ -184,7 +190,10 @@ mod tests {
     fn header_includes_code_and_message() {
         let diag = Diagnostic::error(E_NO_INPUT, "no input files");
         let s = render_codeless(&diag);
-        assert!(s.starts_with("error[E9003]: no input files\n"), "got: {s:?}");
+        assert!(
+            s.starts_with("error[E9003]: no input files\n"),
+            "got: {s:?}"
+        );
     }
 
     #[test]
@@ -198,8 +207,8 @@ mod tests {
     fn primary_label_has_caret() {
         let (sm, id) = sm_one("int x = 1;\nreturn x;\n");
         let span = rccx_source::Span::new(id, 4, 5);
-        let diag = Diagnostic::error(E_USE_AFTER_MOVE, "boom")
-            .with_label(Label::primary(span, "here"));
+        let diag =
+            Diagnostic::error(E_USE_AFTER_MOVE, "boom").with_label(Label::primary(span, "here"));
         let s = render_human(&diag, &sm);
         let expected = "\
 error[E0001]: boom
@@ -215,8 +224,8 @@ error[E0001]: boom
     fn secondary_label_has_dash() {
         let (sm, id) = sm_one("a = b;\n");
         let span = rccx_source::Span::new(id, 4, 5);
-        let diag = Diagnostic::error(E_USE_AFTER_MOVE, "x")
-            .with_label(Label::secondary(span, "context"));
+        let diag =
+            Diagnostic::error(E_USE_AFTER_MOVE, "x").with_label(Label::secondary(span, "context"));
         let s = render_human(&diag, &sm);
         assert!(s.contains("  | "), "got: {s:?}");
         assert!(s.contains("- context"), "got: {s:?}");

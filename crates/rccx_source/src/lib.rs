@@ -101,7 +101,12 @@ pub struct SourceFile {
 impl SourceFile {
     fn new(id: FileId, path: PathBuf, text: Arc<str>) -> Self {
         let line_starts = compute_line_starts(&text);
-        Self { id, path, text, line_starts }
+        Self {
+            id,
+            path,
+            text,
+            line_starts,
+        }
     }
 
     pub fn id(&self) -> FileId {
@@ -149,7 +154,9 @@ impl SourceFile {
             let next = self.line_starts[idx + 1];
             let bytes = self.text.as_bytes();
             let mut e = next;
-            while e > start && (bytes[(e - 1) as usize] == b'\n' || bytes[(e - 1) as usize] == b'\r') {
+            while e > start
+                && (bytes[(e - 1) as usize] == b'\n' || bytes[(e - 1) as usize] == b'\r')
+            {
                 e -= 1;
             }
             e

@@ -151,7 +151,8 @@ mod tests {
     #[test]
     fn missing_file_reports_io_error() {
         let mut opts = Options::default();
-        opts.inputs.push(PathBuf::from("/definitely/not/a/real/path.c"));
+        opts.inputs
+            .push(PathBuf::from("/definitely/not/a/real/path.c"));
         let result = compile(&opts);
         assert!(!result.success);
         let s = result.render_to_string();

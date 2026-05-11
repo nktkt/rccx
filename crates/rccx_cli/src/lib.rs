@@ -127,9 +127,9 @@ fn parse_args(args: &[String]) -> Result<Action, Diagnostic> {
                 i += 1;
             }
             "-o" => {
-                let path = args.get(i + 1).ok_or_else(|| {
-                    Diagnostic::error(E_BAD_CLI, "`-o` requires a path argument")
-                })?;
+                let path = args
+                    .get(i + 1)
+                    .ok_or_else(|| Diagnostic::error(E_BAD_CLI, "`-o` requires a path argument"))?;
                 opts.output = Some(PathBuf::from(path));
                 i += 2;
             }

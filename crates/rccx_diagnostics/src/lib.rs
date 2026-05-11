@@ -72,7 +72,11 @@ impl Label {
     }
 
     pub fn primary_unlabeled(span: Span) -> Self {
-        Self { span, message: None, style: LabelStyle::Primary }
+        Self {
+            span,
+            message: None,
+            style: LabelStyle::Primary,
+        }
     }
 
     pub fn secondary(span: Span, message: impl Into<String>) -> Self {
