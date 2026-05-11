@@ -342,6 +342,18 @@ mod tests {
     }
 
     #[test]
+    fn emit_hir_writes_tree_to_stdout() {
+        let dir = tmp_dir("emit-hir");
+        let path = dir.join("hello.c");
+        std::fs::write(&path, "int main(void) { return 0; }\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let (code, out, err) = run_args(&["-emit=hir", &path_str]);
+        assert_eq!(code, 0, "stderr: {err}");
+        assert!(out.contains("FnDef `main`"), "stdout: {out}");
+        assert!(out.contains("IntLit 0 : int"), "stdout: {out}");
+    }
+
+    #[test]
     fn emit_ast_writes_tree_to_stdout() {
         let dir = tmp_dir("emit-ast");
         let path = dir.join("hello.c");

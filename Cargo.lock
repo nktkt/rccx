@@ -31,9 +31,18 @@ version = "0.0.1"
 dependencies = [
  "rccx_ast",
  "rccx_diagnostics",
+ "rccx_hir",
  "rccx_lexer",
  "rccx_parser",
  "rccx_pp",
+ "rccx_source",
+ "rccx_typeck",
+]
+
+[[package]]
+name = "rccx_hir"
+version = "0.0.1"
+dependencies = [
  "rccx_source",
 ]
 
@@ -68,3 +77,15 @@ dependencies = [
 [[package]]
 name = "rccx_source"
 version = "0.0.1"
+
+[[package]]
+name = "rccx_typeck"
+version = "0.0.1"
+dependencies = [
+ "rccx_ast",
+ "rccx_diagnostics",
+ "rccx_hir",
+ "rccx_parser",
+ "rccx_pp",
+ "rccx_source",
+]

@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use rccx_ast as ast;
 use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
+use rccx_hir as hir;
 use rccx_lexer::{lex, Token, TokenKind};
 use rccx_parser::parse_module;
 use rccx_pp::{preprocess, PpOptions, UserDefine as PpUserDefine};
 use rccx_source::{FileId, SourceFile, SourceMap, Span};
+use rccx_typeck::check as typeck_check;
 
 pub use options::{CStandard, EmitKind, Options, SafeCMode, UserDefine};
 
@@ -143,6 +145,33 @@ pub fn compile(options: &Options) -> RunResult {
                 emit.push_str(&ast::dump(&module));
             }
         }
+        Some(EmitKind::Hir) => {
+            let pp_opts = build_pp_options(options);
+            for id in loaded_ids.clone() {
+                let (tokens, pp_diags) = preprocess(&mut sources, id, &pp_opts);
+                for d in pp_diags {
+                    sink.emit(d);
+                }
+                let root_span = sources
+                    .file(id)
+                    .map(|f| Span::new(id, 0, f.text().len() as u32))
+                    .unwrap_or(Span::DUMMY);
+                let (module, parse_diags) = parse_module(&tokens, &sources, root_span);
+                for d in parse_diags {
+                    sink.emit(d);
+                }
+                let (hir_module, tc_diags) = typeck_check(&module);
+                for d in tc_diags {
+                    sink.emit(d);
+                }
+                let path = sources
+                    .file(id)
+                    .map(|f| f.path().display().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let _ = writeln!(emit, "; hir for {path}");
+                emit.push_str(&hir::dump(&hir_module));
+            }
+        }
         _ if !loaded_ids.is_empty() => {
             sink.emit(
                 Diagnostic::error(
@@ -150,8 +179,8 @@ pub fn compile(options: &Options) -> RunResult {
                     "compilation pipeline beyond Phase 2 is not implemented yet",
                 )
                 .with_note(
-                    "Phase 3 MVP wires lex + preprocessor + parser + \
-                     `-emit=tokens|pp-tokens|ast`; type check and codegen come later",
+                    "Phase 4 MVP wires lex + preprocessor + parser + typeck + \
+                     `-emit=tokens|pp-tokens|ast|hir`; MIR and codegen come later",
                 )
                 .with_help("see ROADMAP.md for the per-phase plan"),
             );
@@ -340,6 +369,21 @@ mod tests {
         );
         assert!(result.emit.contains("Semicolon"), "{}", result.emit);
         assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    #[test]
+    fn emit_hir_runs_typeck() {
+        let dir = tempdir("emit-hir");
+        let path = dir.join("hello.c");
+        std::fs::write(&path, "int add(int a, int b) { return a + b; }\n").unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        opts.emit = Some(EmitKind::Hir);
+        let result = compile(&opts);
+        assert!(result.success, "diagnostics: {}", result.render_to_string());
+        assert!(result.emit.contains("FnDef `add`"), "{}", result.emit);
+        assert!(result.emit.contains("Binary Add : int"), "{}", result.emit);
+        assert!(result.emit.contains("Ref `a`"), "{}", result.emit);
     }
 
     #[test]

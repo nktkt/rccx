@@ -9,6 +9,8 @@ members = [
     "crates/rccx_pp",
     "crates/rccx_ast",
     "crates/rccx_parser",
+    "crates/rccx_hir",
+    "crates/rccx_typeck",
 ]
 
 [workspace.package]
@@ -34,3 +36,5 @@ rccx_lexer = { path = "crates/rccx_lexer" }
 rccx_pp = { path = "crates/rccx_pp" }
 rccx_ast = { path = "crates/rccx_ast" }
 rccx_parser = { path = "crates/rccx_parser" }
+rccx_hir = { path = "crates/rccx_hir" }
+rccx_typeck = { path = "crates/rccx_typeck" }
