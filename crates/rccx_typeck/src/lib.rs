@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use rccx_ast as ast;
 use rccx_diagnostics::code::DiagnosticCode;
 use rccx_diagnostics::{Diagnostic, Label};
-use rccx_hir::{self as hir, HirType, SymbolId};
+use rccx_hir::{self as hir, HirType, Ownership, SymbolId};
 use rccx_source::Span;
 
 pub const E_UNDEFINED_IDENT: DiagnosticCode = DiagnosticCode("E0401");
@@ -348,6 +348,13 @@ impl TypeChecker {
                 hir::HirStmtKind::Continue
             }
             ast::StmtKind::Empty => hir::HirStmtKind::Empty,
+            ast::StmtKind::Unsafe(b) => {
+                // Treat the contents like a regular compound block for now.
+                // The borrow checker (Phase 7) uses the lexical Unsafe marker
+                // separately; in HIR we collapse to Compound so later stages
+                // don't have to special-case it.
+                hir::HirStmtKind::Compound(self.lower_block(b))
+            }
         };
         hir::HirStmt { kind, span }
     }
@@ -398,7 +405,10 @@ impl TypeChecker {
             ast::TypeKind::Void => HirType::Void,
             ast::TypeKind::Bool => HirType::Bool,
             ast::TypeKind::Builtin(b) => builtin_to_hir(*b),
-            ast::TypeKind::Pointer(inner) => HirType::Pointer(Box::new(self.lower_type(inner))),
+            ast::TypeKind::Pointer { pointee, ownership } => HirType::Pointer {
+                pointee: Box::new(self.lower_type(pointee)),
+                ownership: lower_ownership(*ownership),
+            },
             ast::TypeKind::Array { elem, size } => {
                 let elem = Box::new(self.lower_type(elem));
                 // For MVP, only treat constant int literals as array sizes.
@@ -444,7 +454,10 @@ impl TypeChecker {
                 let clean = s.trim_matches('"').to_string();
                 hir::HirExpr {
                     kind: hir::HirExprKind::StringLit(clean),
-                    ty: HirType::Pointer(Box::new(HirType::Char)),
+                    ty: HirType::Pointer {
+                        pointee: Box::new(HirType::Char),
+                        ownership: Ownership::Raw,
+                    },
                     span,
                 }
             }
@@ -562,7 +575,7 @@ impl TypeChecker {
                 params,
                 is_variadic,
             } => ((**ret).clone(), params.clone(), *is_variadic),
-            HirType::Pointer(inner) => match inner.as_ref() {
+            HirType::Pointer { pointee, .. } => match pointee.as_ref() {
                 HirType::Function {
                     ret,
                     params,
@@ -651,7 +664,7 @@ impl TypeChecker {
         self.array_decay(&mut index_hir);
 
         let elem_ty = match &base_ty {
-            HirType::Pointer(inner) => (**inner).clone(),
+            HirType::Pointer { pointee, .. } => (**pointee).clone(),
             _ => {
                 if !base_ty.is_error() {
                     self.error(
@@ -702,12 +715,15 @@ impl TypeChecker {
                         "cannot take address of non-lvalue",
                     );
                 }
-                HirType::Pointer(Box::new(operand_hir.ty.clone()))
+                HirType::Pointer {
+                    pointee: Box::new(operand_hir.ty.clone()),
+                    ownership: Ownership::Raw,
+                }
             }
             hir::HirUnaryOp::Deref => {
                 let ty = self.array_decay(&mut operand_hir);
                 match ty {
-                    HirType::Pointer(inner) => *inner,
+                    HirType::Pointer { pointee, .. } => *pointee,
                     other => {
                         if !other.is_error() {
                             self.error(
@@ -814,15 +830,26 @@ impl TypeChecker {
                 let lt = l.ty.clone();
                 let rt = r.ty.clone();
                 match (&lt, &rt) {
-                    (HirType::Pointer(inner), other) | (other, HirType::Pointer(inner))
+                    (HirType::Pointer { pointee, ownership }, other)
+                    | (other, HirType::Pointer { pointee, ownership })
                         if op == B::Add && other.is_integer() =>
                     {
-                        HirType::Pointer(inner.clone())
+                        HirType::Pointer {
+                            pointee: pointee.clone(),
+                            ownership: *ownership,
+                        }
                     }
-                    (HirType::Pointer(inner), rhs_ty) if op == B::Sub && rhs_ty.is_integer() => {
-                        HirType::Pointer(inner.clone())
+                    (HirType::Pointer { pointee, ownership }, rhs_ty)
+                        if op == B::Sub && rhs_ty.is_integer() =>
+                    {
+                        HirType::Pointer {
+                            pointee: pointee.clone(),
+                            ownership: *ownership,
+                        }
                     }
-                    (HirType::Pointer(_), HirType::Pointer(_)) if op == B::Sub => HirType::Long,
+                    (HirType::Pointer { .. }, HirType::Pointer { .. }) if op == B::Sub => {
+                        HirType::Long
+                    }
                     (a, b) if a.is_arithmetic() && b.is_arithmetic() => {
                         let common = hir::usual_arithmetic(a, b);
                         l = self.convert_to(l, &common, lhs.span);
@@ -1021,8 +1048,16 @@ impl TypeChecker {
         // Allow numeric <-> numeric, and any pointer to/from `void*`.
         let ok = match (&expr.ty, target) {
             (a, b) if a.is_arithmetic() && b.is_arithmetic() => true,
-            (HirType::Pointer(_), HirType::Pointer(t)) if matches!(**t, HirType::Void) => true,
-            (HirType::Pointer(t), HirType::Pointer(_)) if matches!(**t, HirType::Void) => true,
+            (HirType::Pointer { .. }, HirType::Pointer { pointee, .. })
+                if matches!(**pointee, HirType::Void) =>
+            {
+                true
+            }
+            (HirType::Pointer { pointee, .. }, HirType::Pointer { .. })
+                if matches!(**pointee, HirType::Void) =>
+            {
+                true
+            }
             _ => false,
         };
         if !ok {
@@ -1047,6 +1082,15 @@ impl TypeChecker {
             ty: target_clone,
             span: new_span,
         }
+    }
+}
+
+fn lower_ownership(o: ast::Ownership) -> Ownership {
+    match o {
+        ast::Ownership::Raw => Ownership::Raw,
+        ast::Ownership::Owner => Ownership::Owner,
+        ast::Ownership::BorrowShared => Ownership::BorrowShared,
+        ast::Ownership::BorrowMut => Ownership::BorrowMut,
     }
 }
 

@@ -344,7 +344,15 @@ pub fn fmt_type(ty: &HirType) -> String {
         HirType::Float => "float".into(),
         HirType::Double => "double".into(),
         HirType::LongDouble => "long double".into(),
-        HirType::Pointer(inner) => format!("{}*", fmt_type(inner)),
+        HirType::Pointer { pointee, ownership } => {
+            let base = fmt_type(pointee);
+            match ownership {
+                crate::Ownership::Raw => format!("{base}*"),
+                crate::Ownership::Owner => format!("{base}*owner"),
+                crate::Ownership::BorrowShared => format!("{base}*borrow"),
+                crate::Ownership::BorrowMut => format!("{base}*borrow_mut"),
+            }
+        }
         HirType::Array { elem, size } => match size {
             Some(n) => format!("{}[{n}]", fmt_type(elem)),
             None => format!("{}[]", fmt_type(elem)),

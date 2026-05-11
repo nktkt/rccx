@@ -828,7 +828,10 @@ fn compound_assign_binop(op: hir::HirAssignOp) -> BinOp {
 }
 
 fn read_place(place: &Place, ty: &HirType) -> Operand {
-    if ty.is_pointer() {
+    // Phase 7: owner pointers move on read; plain raw pointers and borrows
+    // are read by copy. The borrow checker reads the resulting `Move` to
+    // detect use-after-move.
+    if matches!(ty.ownership(), rccx_hir::Ownership::Owner) {
         Operand::Move(place.clone())
     } else {
         Operand::Copy(place.clone())

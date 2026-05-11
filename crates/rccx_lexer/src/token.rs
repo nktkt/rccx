@@ -98,6 +98,8 @@ pub enum TokenKind {
     MinusMinus,
     Question,
     Colon,
+    /// `::` — C23 attribute-prefix separator (e.g. `[[sc::owner]]`).
+    ColonColon,
 
     Hash,
     HashHash,

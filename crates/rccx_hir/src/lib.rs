@@ -310,7 +310,10 @@ pub enum HirType {
     Float,
     Double,
     LongDouble,
-    Pointer(Box<HirType>),
+    Pointer {
+        pointee: Box<HirType>,
+        ownership: Ownership,
+    },
     Array {
         elem: Box<HirType>,
         /// `None` for incomplete arrays.
@@ -325,6 +328,16 @@ pub enum HirType {
     Error,
 }
 
+/// Safe C ownership attribute on a pointer type. Mirrors `ast::Ownership`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ownership {
+    #[default]
+    Raw,
+    Owner,
+    BorrowShared,
+    BorrowMut,
+}
+
 impl HirType {
     pub fn is_error(&self) -> bool {
         matches!(self, HirType::Error)
@@ -335,7 +348,16 @@ impl HirType {
     }
 
     pub fn is_pointer(&self) -> bool {
-        matches!(self, HirType::Pointer(_))
+        matches!(self, HirType::Pointer { .. })
+    }
+
+    /// Returns the ownership annotation for a pointer type, or `Raw` for
+    /// anything else.
+    pub fn ownership(&self) -> Ownership {
+        match self {
+            HirType::Pointer { ownership, .. } => *ownership,
+            _ => Ownership::Raw,
+        }
     }
 
     pub fn is_array(&self) -> bool {
@@ -402,7 +424,10 @@ impl HirType {
     /// Result of array-to-pointer decay. Returns `None` for non-arrays.
     pub fn decay(&self) -> Option<HirType> {
         match self {
-            HirType::Array { elem, .. } => Some(HirType::Pointer(elem.clone())),
+            HirType::Array { elem, .. } => Some(HirType::Pointer {
+                pointee: elem.clone(),
+                ownership: Ownership::Raw,
+            }),
             _ => None,
         }
     }

@@ -342,6 +342,26 @@ mod tests {
     }
 
     #[test]
+    fn fsafec_double_consume_exits_nonzero() {
+        let dir = tmp_dir("fsafec-cli");
+        let path = dir.join("uaf.c");
+        std::fs::write(
+            &path,
+            "void consume([[sc::owner]] int *p);\n\
+             void f(void) {\n\
+                 [[sc::owner]] int *p;\n\
+                 consume(p);\n\
+                 consume(p);\n\
+             }\n",
+        )
+        .unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let (code, _, err) = run_args(&["-fsafe-c", &path_str]);
+        assert_eq!(code, 1, "stderr: {err}");
+        assert!(err.contains("E0001"), "stderr: {err}");
+    }
+
+    #[test]
     fn emit_mir_writes_dump_to_stdout() {
         let dir = tmp_dir("emit-mir");
         let path = dir.join("hello.c");

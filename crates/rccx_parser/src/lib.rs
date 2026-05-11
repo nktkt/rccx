@@ -191,11 +191,13 @@ impl<'a> Parser<'a> {
     fn parse_item(&mut self) -> Option<Vec<ast::Item>> {
         let start = self.current()?.span;
         let storage = self.parse_storage_specs();
+        let pre_attr_ownership = self.parse_safec_attrs();
         let base_ty = self.parse_type_specifier()?;
 
         // First declarator.
         let mut decls = Vec::new();
-        let (ty, name) = self.parse_declarator(&base_ty)?;
+        let (mut ty, name) = self.parse_declarator(&base_ty)?;
+        apply_outermost_ownership(&mut ty, pre_attr_ownership);
 
         // Function form?
         if self.current_kind() == Some(TokenKind::LParen) {
@@ -238,6 +240,7 @@ impl<'a> Parser<'a> {
 
         while self.eat(TokenKind::Comma) {
             let (mut ty, name) = self.parse_declarator(&base_ty)?;
+            apply_outermost_ownership(&mut ty, pre_attr_ownership);
             ty = self.parse_array_suffix(ty);
             let init = if self.eat(TokenKind::Eq) {
                 Some(self.parse_assignment_expr()?)
@@ -419,14 +422,82 @@ impl<'a> Parser<'a> {
         let start = self.current()?.span;
         while self.eat(TokenKind::Star) {
             let quals = self.parse_qualifiers();
+            let star_attr = self.parse_safec_attrs();
             ty = ast::Type {
-                kind: ast::TypeKind::Pointer(Box::new(ty)),
+                kind: ast::TypeKind::Pointer {
+                    pointee: Box::new(ty),
+                    ownership: star_attr,
+                },
                 qualifiers: quals,
                 span: self.span_from(start),
             };
         }
         let name = self.parse_ident()?;
         Some((ty, name))
+    }
+
+    /// Parse `[[ ... ]]` attribute blocks and return the Safe C ownership
+    /// they encode (or `Ownership::Raw` if none were present).
+    fn parse_safec_attrs(&mut self) -> ast::Ownership {
+        let mut found = ast::Ownership::Raw;
+        while self.current_kind() == Some(TokenKind::LBracket)
+            && self.peek(1).map(|t| t.kind) == Some(TokenKind::LBracket)
+        {
+            self.bump();
+            self.bump();
+            // Read attributes inside `[[ ... ]]`, comma-separated.
+            loop {
+                if self.current_kind() == Some(TokenKind::RBracket) {
+                    break;
+                }
+                if let Some(tok) = self.current().copied() {
+                    if tok.kind == TokenKind::Ident {
+                        let p1_name = self.text(&tok).to_string();
+                        self.bump();
+                        if self.eat(TokenKind::ColonColon) {
+                            if let Some(p2) = self.current().copied() {
+                                if p2.kind == TokenKind::Ident {
+                                    let p2_name = self.text(&p2).to_string();
+                                    self.bump();
+                                    if p1_name == "sc" {
+                                        match p2_name.as_str() {
+                                            "owner" => found = ast::Ownership::Owner,
+                                            "borrow" => found = ast::Ownership::BorrowShared,
+                                            "borrow_mut" => found = ast::Ownership::BorrowMut,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            // Skip optional parenthesized arguments, e.g.
+                            // `[[sc::lifetime("a")]]`.
+                            if self.eat(TokenKind::LParen) {
+                                let mut depth = 1;
+                                while depth > 0 {
+                                    match self.current_kind() {
+                                        Some(TokenKind::LParen) => depth += 1,
+                                        Some(TokenKind::RParen) => depth -= 1,
+                                        None => break,
+                                        _ => {}
+                                    }
+                                    self.bump();
+                                }
+                            }
+                        }
+                    } else {
+                        // Skip anything else we don't model.
+                        self.bump();
+                    }
+                }
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            // Consume the closing `]]`.
+            self.eat(TokenKind::RBracket);
+            self.eat(TokenKind::RBracket);
+        }
+        found
     }
 
     fn parse_array_suffix(&mut self, mut ty: ast::Type) -> ast::Type {
@@ -479,6 +550,8 @@ impl<'a> Parser<'a> {
                 Some(t) => t.span,
                 None => break,
             };
+            // Allow `[[sc::owner]]` etc. before the parameter type.
+            let pre_attr = self.parse_safec_attrs();
             let Some(ty) = self.parse_type_specifier() else {
                 break;
             };
@@ -486,12 +559,17 @@ impl<'a> Parser<'a> {
             let mut ty = ty;
             while self.eat(TokenKind::Star) {
                 let quals = self.parse_qualifiers();
+                let star_attr = self.parse_safec_attrs();
                 ty = ast::Type {
-                    kind: ast::TypeKind::Pointer(Box::new(ty)),
+                    kind: ast::TypeKind::Pointer {
+                        pointee: Box::new(ty),
+                        ownership: star_attr,
+                    },
                     qualifiers: quals,
                     span: self.span_from(start),
                 };
             }
+            apply_outermost_ownership(&mut ty, pre_attr);
             // Optional identifier for the parameter.
             let name = if self.current_kind() == Some(TokenKind::Ident) {
                 self.parse_ident()
@@ -562,6 +640,21 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Option<ast::Stmt> {
         let start = self.current()?.span;
+        // Safe C `unsafe { ... }` — contextual: identifier "unsafe" followed
+        // by an opening brace.
+        if let Some(tok) = self.current() {
+            if tok.kind == TokenKind::Ident
+                && self.text(tok) == "unsafe"
+                && self.peek(1).map(|t| t.kind) == Some(TokenKind::LBrace)
+            {
+                self.bump();
+                let block = self.parse_block()?;
+                return Some(ast::Stmt {
+                    kind: ast::StmtKind::Unsafe(block),
+                    span: self.span_from(start),
+                });
+            }
+        }
         match self.current_kind()? {
             TokenKind::LBrace => {
                 let block = self.parse_block()?;
@@ -717,10 +810,12 @@ impl<'a> Parser<'a> {
 
     fn parse_local_decl_stmt(&mut self) -> Option<Vec<ast::Decl>> {
         let storage = self.parse_storage_specs();
+        let pre_attr_ownership = self.parse_safec_attrs();
         let base = self.parse_type_specifier()?;
         let mut decls = Vec::new();
         loop {
             let (mut ty, name) = self.parse_declarator(&base)?;
+            apply_outermost_ownership(&mut ty, pre_attr_ownership);
             ty = self.parse_array_suffix(ty);
             let init = if self.eat(TokenKind::Eq) {
                 Some(self.parse_assignment_expr()?)
@@ -744,7 +839,28 @@ impl<'a> Parser<'a> {
     }
 
     fn looks_like_decl_start(&self) -> bool {
-        let Some(tok) = self.current() else {
+        // Skip over leading `[[ ... ]]` attribute lists when deciding whether
+        // this is a declaration.
+        let mut offset = 0usize;
+        while self.peek(offset).map(|t| t.kind) == Some(TokenKind::LBracket)
+            && self.peek(offset + 1).map(|t| t.kind) == Some(TokenKind::LBracket)
+        {
+            offset += 2;
+            // Find the matching `]]`.
+            loop {
+                match self.peek(offset).map(|t| t.kind) {
+                    None => return false,
+                    Some(TokenKind::RBracket)
+                        if self.peek(offset + 1).map(|t| t.kind) == Some(TokenKind::RBracket) =>
+                    {
+                        offset += 2;
+                        break;
+                    }
+                    _ => offset += 1,
+                }
+            }
+        }
+        let Some(tok) = self.peek(offset) else {
             return false;
         };
         matches!(
@@ -1042,7 +1158,10 @@ impl<'a> Parser<'a> {
                     while self.eat(TokenKind::Star) {
                         let quals = self.parse_qualifiers();
                         ty = ast::Type {
-                            kind: ast::TypeKind::Pointer(Box::new(ty)),
+                            kind: ast::TypeKind::Pointer {
+                                pointee: Box::new(ty),
+                                ownership: ast::Ownership::Raw,
+                            },
                             qualifiers: quals,
                             span: self.span_from(cast_start),
                         };
@@ -1077,6 +1196,15 @@ impl<'a> Parser<'a> {
                 None
             }
         }
+    }
+}
+
+fn apply_outermost_ownership(ty: &mut ast::Type, ownership: ast::Ownership) {
+    if ownership == ast::Ownership::Raw {
+        return;
+    }
+    if let ast::TypeKind::Pointer { ownership: own, .. } = &mut ty.kind {
+        *own = ownership;
     }
 }
 
@@ -1295,5 +1423,23 @@ mod tests {
     fn const_pointer_type() {
         let s = dump_clean("const int *p;\n");
         assert!(s.contains("const int*"), "{s}");
+    }
+
+    #[test]
+    fn safec_owner_attribute_marks_pointer() {
+        let s = dump_clean("[[sc::owner]] int *p;\n");
+        assert!(s.contains("int*owner"), "{s}");
+    }
+
+    #[test]
+    fn safec_borrow_after_star() {
+        let s = dump_clean("int * [[sc::borrow]] p;\n");
+        assert!(s.contains("int*borrow"), "{s}");
+    }
+
+    #[test]
+    fn unsafe_block_is_recognized() {
+        let s = dump_clean("int f(void) { unsafe { return 0; } return 1; }\n");
+        assert!(s.contains("Unsafe"), "{s}");
     }
 }

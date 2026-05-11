@@ -104,12 +104,30 @@ pub enum TypeKind {
     /// One of the C builtin numeric types, after normalizing the signed /
     /// unsigned / short / long modifier combinations.
     Builtin(BuiltinType),
-    Pointer(Box<Type>),
+    /// `T*` plus optional Safe C ownership attribute.
+    Pointer {
+        pointee: Box<Type>,
+        ownership: Ownership,
+    },
     /// `T[N]`. `size = None` represents incomplete `T[]`.
     Array {
         elem: Box<Type>,
         size: Option<Box<Expr>>,
     },
+}
+
+/// Safe C ownership attribute on a pointer type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ownership {
+    /// Plain C pointer.
+    #[default]
+    Raw,
+    /// `[[sc::owner]]`.
+    Owner,
+    /// `[[sc::borrow]]`.
+    BorrowShared,
+    /// `[[sc::borrow_mut]]`.
+    BorrowMut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +200,8 @@ pub enum StmtKind {
     Continue,
     /// `;` on its own.
     Empty,
+    /// Safe C `unsafe { ... }` block.
+    Unsafe(Block),
 }
 
 #[derive(Debug, Clone)]

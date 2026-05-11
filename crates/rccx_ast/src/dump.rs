@@ -203,6 +203,10 @@ impl<'a> Printer<'a> {
             StmtKind::Break => self.line("Break"),
             StmtKind::Continue => self.line("Continue"),
             StmtKind::Empty => self.line("Empty"),
+            StmtKind::Unsafe(b) => {
+                self.line("Unsafe");
+                self.indented(|p| p.block(b));
+            }
         }
     }
 
@@ -325,9 +329,14 @@ fn fmt_type_into(ty: &Type, out: &mut String) {
         TypeKind::Void => out.push_str("void"),
         TypeKind::Bool => out.push_str("bool"),
         TypeKind::Builtin(b) => out.push_str(builtin_name(*b)),
-        TypeKind::Pointer(inner) => {
-            fmt_type_into(inner, out);
-            out.push('*');
+        TypeKind::Pointer { pointee, ownership } => {
+            fmt_type_into(pointee, out);
+            match ownership {
+                Ownership::Raw => out.push('*'),
+                Ownership::Owner => out.push_str("*owner"),
+                Ownership::BorrowShared => out.push_str("*borrow"),
+                Ownership::BorrowMut => out.push_str("*borrow_mut"),
+            }
         }
         TypeKind::Array { elem, size } => {
             fmt_type_into(elem, out);

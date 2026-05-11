@@ -418,6 +418,7 @@ impl<'a> Lexer<'a> {
             (b'|', Some(b'='), _) => (T::PipeEq, 2),
             (b'^', Some(b'='), _) => (T::CaretEq, 2),
             (b'#', Some(b'#'), _) => (T::HashHash, 2),
+            (b':', Some(b':'), _) => (T::ColonColon, 2),
             (b'(', _, _) => (T::LParen, 1),
             (b')', _, _) => (T::RParen, 1),
             (b'{', _, _) => (T::LBrace, 1),
@@ -696,6 +697,19 @@ mod tests {
         assert!(matches!(toks[0].kind, TokenKind::BlockComment));
         // "/* a\nb */" is 9 bytes; the comment span runs [0, 9).
         assert_eq!(toks[0].span.hi, 9);
+    }
+
+    #[test]
+    fn double_colon_is_one_token() {
+        let ks = kinds("sc::owner");
+        let punct: Vec<_> = ks
+            .into_iter()
+            .filter(|k| !matches!(k, TokenKind::Eof))
+            .collect();
+        assert_eq!(
+            punct,
+            vec![TokenKind::Ident, TokenKind::ColonColon, TokenKind::Ident,]
+        );
     }
 
     #[test]

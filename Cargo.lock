@@ -10,6 +10,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rccx_borrowck"
+version = "0.0.1"
+dependencies = [
+ "rccx_diagnostics",
+ "rccx_hir",
+ "rccx_mir",
+ "rccx_parser",
+ "rccx_pp",
+ "rccx_source",
+ "rccx_typeck",
+]
+
+[[package]]
 name = "rccx_cli"
 version = "0.0.1"
 dependencies = [
@@ -30,6 +43,7 @@ name = "rccx_driver"
 version = "0.0.1"
 dependencies = [
  "rccx_ast",
+ "rccx_borrowck",
  "rccx_diagnostics",
  "rccx_hir",
  "rccx_lexer",

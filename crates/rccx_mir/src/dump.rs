@@ -169,7 +169,7 @@ fn short_type(ty: &HirType) -> String {
         HirType::Float => "f32".into(),
         HirType::Double => "f64".into(),
         HirType::LongDouble => "f80".into(),
-        HirType::Pointer(_) => "ptr".into(),
+        HirType::Pointer { .. } => "ptr".into(),
         HirType::Array { .. } => "arr".into(),
         HirType::Function { .. } => "fn".into(),
         HirType::Error => "err".into(),

@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use rccx_ast as ast;
+use rccx_borrowck::{check as borrowck_check, BorrowCheckLevel};
 use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
 use rccx_hir as hir;
@@ -202,17 +203,49 @@ pub fn compile(options: &Options) -> RunResult {
             }
         }
         _ if !loaded_ids.is_empty() => {
-            sink.emit(
-                Diagnostic::error(
-                    E_UNIMPLEMENTED,
-                    "compilation pipeline beyond Phase 2 is not implemented yet",
-                )
-                .with_note(
-                    "Phase 5 MVP wires lex + preprocessor + parser + typeck + MIR + \
-                     `-emit=tokens|pp-tokens|ast|hir|mir`; codegen and borrow check come later",
-                )
-                .with_help("see ROADMAP.md for the per-phase plan"),
-            );
+            // Default (no -emit=...): run the full pipeline up through the
+            // borrow checker if Safe C is active. Codegen is not yet wired.
+            if options.safe_c != SafeCMode::Off {
+                let pp_opts = build_pp_options(options);
+                for id in loaded_ids.clone() {
+                    let (tokens, pp_diags) = preprocess(&mut sources, id, &pp_opts);
+                    for d in pp_diags {
+                        sink.emit(d);
+                    }
+                    let root_span = sources
+                        .file(id)
+                        .map(|f| Span::new(id, 0, f.text().len() as u32))
+                        .unwrap_or(Span::DUMMY);
+                    let (module, parse_diags) = parse_module(&tokens, &sources, root_span);
+                    for d in parse_diags {
+                        sink.emit(d);
+                    }
+                    let (hir_module, tc_diags) = typeck_check(&module);
+                    for d in tc_diags {
+                        sink.emit(d);
+                    }
+                    let mir = mir_build(&hir_module);
+                    let level = match options.safe_c {
+                        SafeCMode::Off => unreachable!(),
+                        SafeCMode::Error => BorrowCheckLevel::Error,
+                        SafeCMode::Warn => BorrowCheckLevel::Warn,
+                    };
+                    for d in borrowck_check(&mir, level) {
+                        sink.emit(d);
+                    }
+                }
+            } else {
+                sink.emit(
+                    Diagnostic::error(E_UNIMPLEMENTED, "code generation is not implemented yet")
+                        .with_note(
+                            "Phase 7 MVP wires lex + preprocessor + parser + typeck + MIR + \
+                         borrow checker (via `-fsafe-c`); LLVM codegen lands in Phase 8",
+                        )
+                        .with_help(
+                            "try `-emit=mir` for now, or add `-fsafe-c` to run the borrow checker",
+                        ),
+                );
+            }
         }
         _ => {}
     }
@@ -398,6 +431,56 @@ mod tests {
         );
         assert!(result.emit.contains("Semicolon"), "{}", result.emit);
         assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    #[test]
+    fn fsafec_detects_double_consume_of_owner() {
+        let dir = tempdir("fsafe-c");
+        let path = dir.join("uaf.c");
+        std::fs::write(
+            &path,
+            "void consume([[sc::owner]] int *p);\n\
+             void f(void) {\n\
+                 [[sc::owner]] int *p;\n\
+                 consume(p);\n\
+                 consume(p);\n\
+             }\n",
+        )
+        .unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        opts.safe_c = SafeCMode::Error;
+        let result = compile(&opts);
+        let rendered = result.render_to_string();
+        assert!(!result.success, "{rendered}");
+        assert!(rendered.contains("E0001"), "{rendered}");
+        assert!(
+            rendered.contains("use of moved owner pointer"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn fsafec_off_does_not_diagnose() {
+        let dir = tempdir("fsafe-c-off");
+        let path = dir.join("uaf.c");
+        std::fs::write(
+            &path,
+            "void consume([[sc::owner]] int *p);\n\
+             void f(void) {\n\
+                 [[sc::owner]] int *p;\n\
+                 consume(p);\n\
+                 consume(p);\n\
+             }\n",
+        )
+        .unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        // safe_c stays Off; the driver should still complain that codegen
+        // isn't implemented but should NOT emit E0001.
+        let result = compile(&opts);
+        let rendered = result.render_to_string();
+        assert!(!rendered.contains("E0001"), "{rendered}");
     }
 
     #[test]

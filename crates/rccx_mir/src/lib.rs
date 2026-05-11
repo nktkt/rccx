@@ -366,14 +366,24 @@ mod tests {
     }
 
     #[test]
-    fn pointer_read_uses_move() {
+    fn raw_pointer_read_uses_copy() {
         let m = mir_from("int f(void) { int x = 1; int *p = &x; int y = *p; return y; }\n");
         let body = &m.functions[0];
         let dump = dump_body(body);
-        // `*p` produces a Move of the pointer place; the dump should mention
-        // a Move operand somewhere.
-        assert!(dump.contains("move "), "{dump}");
+        // Raw pointers (no Safe C ownership attribute) read by copy.
         assert!(dump.contains("&raw "), "{dump}");
+        assert!(!dump.contains("move "), "{dump}");
+    }
+
+    #[test]
+    fn owner_pointer_read_uses_move() {
+        let m = mir_from(
+            "void consume([[sc::owner]] int *p);\nvoid f(void) { [[sc::owner]] int *p; consume(p); }\n",
+        );
+        // Prototype has no body, so we get one MIR for `f`.
+        assert_eq!(m.functions.len(), 1);
+        let dump = dump_body(&m.functions[0]);
+        assert!(dump.contains("move "), "{dump}");
     }
 
     #[test]
