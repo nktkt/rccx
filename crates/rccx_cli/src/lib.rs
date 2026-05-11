@@ -58,6 +58,9 @@ pub fn run_with(args: &[String], streams: &mut Streams<'_>) -> u8 {
         },
         Ok(Action::Compile(opts)) => {
             let result = rccx_driver::compile(&opts);
+            if !result.emit.is_empty() {
+                let _ = write!(streams.stdout, "{}", result.emit);
+            }
             for diag in &result.diagnostics {
                 let _ = write!(
                     streams.stderr,
@@ -269,5 +272,20 @@ mod tests {
         let (code, _, err) = run_args(&["-emit=nonsense", "a.c"]);
         assert_eq!(code, 2);
         assert!(err.contains("unknown -emit target"));
+    }
+
+    #[test]
+    fn emit_tokens_writes_dump_to_stdout() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("rccx-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hello.c");
+        std::fs::write(&path, "int x = 1;\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let (code, out, err) = run_args(&["-emit=tokens", &path_str]);
+        assert_eq!(code, 0, "stderr: {err}");
+        assert!(out.contains("Keyword(int)"), "stdout: {out}");
+        assert!(out.contains("EOF"), "stdout: {out}");
+        assert!(err.is_empty(), "stderr: {err}");
     }
 }

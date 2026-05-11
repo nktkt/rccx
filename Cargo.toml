@@ -5,6 +5,7 @@ members = [
     "crates/rccx_driver",
     "crates/rccx_source",
     "crates/rccx_diagnostics",
+    "crates/rccx_lexer",
 ]
 
 [workspace.package]
@@ -26,3 +27,4 @@ too_many_arguments = "allow"
 rccx_source = { path = "crates/rccx_source" }
 rccx_diagnostics = { path = "crates/rccx_diagnostics" }
 rccx_driver = { path = "crates/rccx_driver" }
+rccx_lexer = { path = "crates/rccx_lexer" }

@@ -23,6 +23,15 @@ name = "rccx_driver"
 version = "0.0.1"
 dependencies = [
  "rccx_diagnostics",
+ "rccx_lexer",
+ "rccx_source",
+]
+
+[[package]]
+name = "rccx_lexer"
+version = "0.0.1"
+dependencies = [
+ "rccx_diagnostics",
  "rccx_source",
 ]
 

@@ -1,16 +1,18 @@
 //! Pipeline driver for `rccx`.
 //!
-//! Phase 0 exposes only the option struct, the `--version` / `--help` /
-//! `--explain` entry points, and a placeholder `compile` that emits a clean
-//! "not yet implemented" diagnostic so we can wire CLI plumbing end-to-end.
+//! In Phase 0 the driver only opened input files and emitted a "not yet
+//! implemented" diagnostic. Phase 1 adds the first real stage: lex the input
+//! and, on `-emit=tokens`, dump the token stream.
 
 pub mod options;
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
-use rccx_source::SourceMap;
+use rccx_lexer::{lex, Token, TokenKind};
+use rccx_source::{SourceFile, SourceMap};
 
 pub use options::{CStandard, EmitKind, Options, SafeCMode};
 
@@ -49,6 +51,9 @@ pub struct RunResult {
     pub sources: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
     pub success: bool,
+    /// Stdout-bound output produced by `-emit=...` modes. Empty in the
+    /// regular compile path.
+    pub emit: String,
 }
 
 impl RunResult {
@@ -63,40 +68,103 @@ impl RunResult {
 
 /// Run the compiler pipeline with the given options.
 ///
-/// Phase 0 only opens the input files (so we can report I/O errors with real
-/// spans) and then emits a placeholder "not yet implemented" diagnostic.
+/// Phase 1 covers `-emit=tokens`; later phases extend the pipeline. Any other
+/// emit kind, and the regular compile path, still bottoms out at the
+/// "not yet implemented" diagnostic.
 pub fn compile(options: &Options) -> RunResult {
     let mut sink = DiagnosticSink::new();
     let mut sources = SourceMap::new();
+    let mut emit = String::new();
 
     if options.inputs.is_empty() {
         sink.emit(
             Diagnostic::error(E_NO_INPUT, "no input files")
                 .with_help("pass a C source file, e.g. `rccx hello.c`"),
         );
-        return finish(sources, sink);
+        return finish(sources, sink, emit);
     }
 
-    let mut any_file_loaded = false;
+    let mut loaded_ids = Vec::new();
     for input in &options.inputs {
         match load_file(&mut sources, input) {
-            Ok(_) => any_file_loaded = true,
+            Ok(id) => loaded_ids.push(id),
             Err(diag) => sink.emit(diag),
         }
     }
 
-    if any_file_loaded {
-        sink.emit(
-            Diagnostic::error(
-                E_UNIMPLEMENTED,
-                "compilation pipeline is not implemented yet (Phase 0)",
-            )
-            .with_note("Phase 0 only wires the CLI, source manager, and diagnostics")
-            .with_help("see ROADMAP.md for the per-phase plan"),
-        );
+    match options.emit {
+        Some(EmitKind::Tokens) => {
+            for id in &loaded_ids {
+                let file = sources.file(*id).expect("just loaded");
+                let (tokens, diags) = lex(file);
+                for diag in diags {
+                    sink.emit(diag);
+                }
+                dump_tokens(&mut emit, file, &tokens);
+            }
+        }
+        _ if !loaded_ids.is_empty() => {
+            sink.emit(
+                Diagnostic::error(
+                    E_UNIMPLEMENTED,
+                    "compilation pipeline beyond Phase 1 is not implemented yet",
+                )
+                .with_note("Phase 1 only wires lex + `-emit=tokens`; parser and codegen come later")
+                .with_help("see ROADMAP.md for the per-phase plan"),
+            );
+        }
+        _ => {}
     }
 
-    finish(sources, sink)
+    finish(sources, sink, emit)
+}
+
+fn dump_tokens(out: &mut String, file: &SourceFile, tokens: &[Token]) {
+    let _ = writeln!(out, "; tokens for {}", file.path().display());
+    for tok in tokens {
+        if matches!(tok.kind, TokenKind::Eof) {
+            let _ = writeln!(out, "  [{:>4}..{:>4}) EOF", tok.span.lo, tok.span.hi);
+            continue;
+        }
+        let text = file.slice(tok.span).unwrap_or("");
+        let escaped = escape_for_dump(text);
+        let _ = writeln!(
+            out,
+            "  [{:>4}..{:>4}) {:<18} {}",
+            tok.span.lo,
+            tok.span.hi,
+            format_kind(tok.kind),
+            escaped,
+        );
+    }
+}
+
+fn format_kind(kind: TokenKind) -> String {
+    match kind {
+        TokenKind::Keyword(kw) => format!("Keyword({})", kw.as_str()),
+        TokenKind::IntLiteral { base } => format!("IntLiteral({base:?})"),
+        other => format!("{other:?}"),
+    }
+}
+
+fn escape_for_dump(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn load_file(sources: &mut SourceMap, path: &PathBuf) -> Result<rccx_source::FileId, Diagnostic> {
@@ -110,12 +178,13 @@ fn load_file(sources: &mut SourceMap, path: &PathBuf) -> Result<rccx_source::Fil
     }
 }
 
-fn finish(sources: SourceMap, mut sink: DiagnosticSink) -> RunResult {
+fn finish(sources: SourceMap, mut sink: DiagnosticSink, emit: String) -> RunResult {
     let success = !sink.has_errors();
     RunResult {
         sources,
         diagnostics: sink.drain(),
         success,
+        emit,
     }
 }
 
@@ -158,6 +227,34 @@ mod tests {
         let s = result.render_to_string();
         assert!(s.contains("E9001"), "got: {s}");
         assert!(s.contains("could not read"), "got: {s}");
+    }
+
+    #[test]
+    fn emit_tokens_dumps_token_stream() {
+        let dir = tempdir();
+        let path = dir.join("hello.c");
+        std::fs::write(&path, "int x = 42;\n").unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        opts.emit = Some(EmitKind::Tokens);
+        let result = compile(&opts);
+        assert!(result.success, "diagnostics: {}", result.render_to_string());
+        assert!(result.emit.contains("Keyword(int)"), "{}", result.emit);
+        assert!(result.emit.contains("Ident"), "{}", result.emit);
+        assert!(
+            result.emit.contains("IntLiteral(Decimal)"),
+            "{}",
+            result.emit
+        );
+        assert!(result.emit.contains("Semicolon"), "{}", result.emit);
+        assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    fn tempdir() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("rccx-test-{}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
     }
 
     #[test]
