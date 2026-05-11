@@ -14,6 +14,7 @@ use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
 use rccx_hir as hir;
 use rccx_lexer::{lex, Token, TokenKind};
+use rccx_mir::{build_module as mir_build, dump as mir_dump};
 use rccx_parser::parse_module;
 use rccx_pp::{preprocess, PpOptions, UserDefine as PpUserDefine};
 use rccx_source::{FileId, SourceFile, SourceMap, Span};
@@ -172,6 +173,34 @@ pub fn compile(options: &Options) -> RunResult {
                 emit.push_str(&hir::dump(&hir_module));
             }
         }
+        Some(EmitKind::Mir) => {
+            let pp_opts = build_pp_options(options);
+            for id in loaded_ids.clone() {
+                let (tokens, pp_diags) = preprocess(&mut sources, id, &pp_opts);
+                for d in pp_diags {
+                    sink.emit(d);
+                }
+                let root_span = sources
+                    .file(id)
+                    .map(|f| Span::new(id, 0, f.text().len() as u32))
+                    .unwrap_or(Span::DUMMY);
+                let (module, parse_diags) = parse_module(&tokens, &sources, root_span);
+                for d in parse_diags {
+                    sink.emit(d);
+                }
+                let (hir_module, tc_diags) = typeck_check(&module);
+                for d in tc_diags {
+                    sink.emit(d);
+                }
+                let mir = mir_build(&hir_module);
+                let path = sources
+                    .file(id)
+                    .map(|f| f.path().display().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let _ = writeln!(emit, "; mir for {path}");
+                emit.push_str(&mir_dump(&mir));
+            }
+        }
         _ if !loaded_ids.is_empty() => {
             sink.emit(
                 Diagnostic::error(
@@ -179,8 +208,8 @@ pub fn compile(options: &Options) -> RunResult {
                     "compilation pipeline beyond Phase 2 is not implemented yet",
                 )
                 .with_note(
-                    "Phase 4 MVP wires lex + preprocessor + parser + typeck + \
-                     `-emit=tokens|pp-tokens|ast|hir`; MIR and codegen come later",
+                    "Phase 5 MVP wires lex + preprocessor + parser + typeck + MIR + \
+                     `-emit=tokens|pp-tokens|ast|hir|mir`; codegen and borrow check come later",
                 )
                 .with_help("see ROADMAP.md for the per-phase plan"),
             );
@@ -369,6 +398,25 @@ mod tests {
         );
         assert!(result.emit.contains("Semicolon"), "{}", result.emit);
         assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    #[test]
+    fn emit_mir_builds_bodies() {
+        let dir = tempdir("emit-mir");
+        let path = dir.join("hello.c");
+        std::fs::write(
+            &path,
+            "int main(void) { int x = 1; if (x) { return 2; } return 0; }\n",
+        )
+        .unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        opts.emit = Some(EmitKind::Mir);
+        let result = compile(&opts);
+        assert!(result.success, "diagnostics: {}", result.render_to_string());
+        assert!(result.emit.contains("fn `main`"), "{}", result.emit);
+        assert!(result.emit.contains("switchInt"), "{}", result.emit);
+        assert!(result.emit.contains("return"), "{}", result.emit);
     }
 
     #[test]
