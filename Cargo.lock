@@ -24,6 +24,7 @@ version = "0.0.1"
 dependencies = [
  "rccx_diagnostics",
  "rccx_lexer",
+ "rccx_pp",
  "rccx_source",
 ]
 
@@ -32,6 +33,15 @@ name = "rccx_lexer"
 version = "0.0.1"
 dependencies = [
  "rccx_diagnostics",
+ "rccx_source",
+]
+
+[[package]]
+name = "rccx_pp"
+version = "0.0.1"
+dependencies = [
+ "rccx_diagnostics",
+ "rccx_lexer",
  "rccx_source",
 ]
 

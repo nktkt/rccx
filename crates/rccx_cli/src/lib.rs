@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use rccx_diagnostics::code::E_BAD_CLI;
 use rccx_diagnostics::{render::render_codeless, Diagnostic};
 use rccx_driver::{
-    options::{CStandard, EmitKind, Options, SafeCMode},
+    options::{CStandard, EmitKind, Options, SafeCMode, UserDefine},
     HELP_TEXT, VERSION,
 };
 
@@ -136,6 +136,28 @@ fn parse_args(args: &[String]) -> Result<Action, Diagnostic> {
                 opts.output = Some(PathBuf::from(path));
                 i += 2;
             }
+            "-I" => {
+                let path = args
+                    .get(i + 1)
+                    .ok_or_else(|| Diagnostic::error(E_BAD_CLI, "`-I` requires a path argument"))?;
+                opts.include_paths.push(PathBuf::from(path));
+                i += 2;
+            }
+            "-D" => {
+                let raw = args
+                    .get(i + 1)
+                    .ok_or_else(|| Diagnostic::error(E_BAD_CLI, "`-D` requires NAME[=BODY]"))?;
+                opts.user_defines.push(parse_define(raw)?);
+                i += 2;
+            }
+            _ if arg.starts_with("-I") && arg.len() > 2 => {
+                opts.include_paths.push(PathBuf::from(&arg[2..]));
+                i += 1;
+            }
+            _ if arg.starts_with("-D") && arg.len() > 2 => {
+                opts.user_defines.push(parse_define(&arg[2..])?);
+                i += 1;
+            }
             _ if arg.starts_with("-std=") => {
                 let val = &arg[5..];
                 opts.standard = val
@@ -165,6 +187,38 @@ fn parse_args(args: &[String]) -> Result<Action, Diagnostic> {
     }
 
     Ok(Action::Compile(opts))
+}
+
+fn parse_define(raw: &str) -> Result<UserDefine, Diagnostic> {
+    let (name, body) = match raw.find('=') {
+        Some(idx) => (&raw[..idx], &raw[idx + 1..]),
+        None => (raw, "1"),
+    };
+    if name.is_empty() {
+        return Err(Diagnostic::error(
+            E_BAD_CLI,
+            "`-D` requires a macro name before `=`",
+        ));
+    }
+    if !is_valid_ident(name) {
+        return Err(Diagnostic::error(
+            E_BAD_CLI,
+            format!("`-D` macro name `{name}` is not a valid identifier"),
+        ));
+    }
+    Ok(UserDefine {
+        name: name.to_string(),
+        body: body.to_string(),
+    })
+}
+
+fn is_valid_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]
@@ -276,9 +330,7 @@ mod tests {
 
     #[test]
     fn emit_tokens_writes_dump_to_stdout() {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("rccx-cli-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tmp_dir("emit-tokens");
         let path = dir.join("hello.c");
         std::fs::write(&path, "int x = 1;\n").unwrap();
         let path_str = path.to_string_lossy().to_string();
@@ -287,5 +339,57 @@ mod tests {
         assert!(out.contains("Keyword(int)"), "stdout: {out}");
         assert!(out.contains("EOF"), "stdout: {out}");
         assert!(err.is_empty(), "stderr: {err}");
+    }
+
+    #[test]
+    fn dash_d_predefines_a_macro() {
+        let dir = tmp_dir("dash-d");
+        let path = dir.join("a.c");
+        std::fs::write(&path, "int x = N;\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let (code, out, err) = run_args(&["-DN=9", "-emit=pp-tokens", &path_str]);
+        assert_eq!(code, 0, "stderr: {err}");
+        assert!(out.contains("IntLiteral(Decimal) \"9\""), "stdout: {out}");
+    }
+
+    #[test]
+    fn dash_d_without_body_defaults_to_one() {
+        let dir = tmp_dir("dash-d-empty");
+        let path = dir.join("a.c");
+        std::fs::write(&path, "int x = N;\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let (code, out, _) = run_args(&["-D", "N", "-emit=pp-tokens", &path_str]);
+        assert_eq!(code, 0);
+        assert!(out.contains("IntLiteral(Decimal) \"1\""), "stdout: {out}");
+    }
+
+    #[test]
+    fn dash_i_lets_system_include_resolve() {
+        let dir = tmp_dir("dash-i");
+        std::fs::write(dir.join("h.h"), "int y;\n").unwrap();
+        let path = dir.join("a.c");
+        std::fs::write(&path, "#include <h.h>\n").unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let inc = dir.to_string_lossy().to_string();
+        let (code, out, err) = run_args(&["-I", &inc, "-emit=pp-tokens", &path_str]);
+        assert_eq!(code, 0, "stderr: {err}");
+        assert!(out.contains("Ident"), "stdout: {out}");
+    }
+
+    #[test]
+    fn bad_define_name_errors() {
+        let (code, _, err) = run_args(&["-D=42", "a.c"]);
+        assert_eq!(code, 2);
+        assert!(err.contains("macro name"), "stderr: {err}");
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let mut p = std::env::temp_dir();
+        let id = N.fetch_add(1, Ordering::Relaxed);
+        p.push(format!("rccx-cli-{}-{}-{}", tag, std::process::id(), id));
+        std::fs::create_dir_all(&p).unwrap();
+        p
     }
 }

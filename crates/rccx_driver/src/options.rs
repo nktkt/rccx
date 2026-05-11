@@ -55,7 +55,10 @@ pub enum SafeCMode {
 /// Intermediate form to emit via `-emit=...`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmitKind {
+    /// Raw lexer tokens, before preprocessing.
     Tokens,
+    /// Post-preprocessor tokens.
+    PpTokens,
     Ast,
     Hir,
     Mir,
@@ -69,6 +72,7 @@ impl FromStr for EmitKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "tokens" => Ok(EmitKind::Tokens),
+            "pp-tokens" => Ok(EmitKind::PpTokens),
             "ast" => Ok(EmitKind::Ast),
             "hir" => Ok(EmitKind::Hir),
             "mir" => Ok(EmitKind::Mir),
@@ -80,6 +84,13 @@ impl FromStr for EmitKind {
     }
 }
 
+/// Single `-D NAME[=BODY]` definition seeded into the preprocessor.
+#[derive(Debug, Clone)]
+pub struct UserDefine {
+    pub name: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     pub inputs: Vec<PathBuf>,
@@ -88,6 +99,10 @@ pub struct Options {
     pub safe_c: SafeCMode,
     pub emit: Option<EmitKind>,
     pub json_diagnostics: bool,
+    /// `-I` search paths for the preprocessor.
+    pub include_paths: Vec<PathBuf>,
+    /// `-D NAME[=BODY]` definitions.
+    pub user_defines: Vec<UserDefine>,
 }
 
 #[cfg(test)]
@@ -109,6 +124,7 @@ mod tests {
     #[test]
     fn emit_kind_parses() {
         assert_eq!("tokens".parse::<EmitKind>().unwrap(), EmitKind::Tokens);
+        assert_eq!("pp-tokens".parse::<EmitKind>().unwrap(), EmitKind::PpTokens);
         assert_eq!("llvm-ir".parse::<EmitKind>().unwrap(), EmitKind::LlvmIr);
         assert!("nonsense".parse::<EmitKind>().is_err());
     }

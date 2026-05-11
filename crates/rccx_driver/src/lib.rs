@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
 use rccx_lexer::{lex, Token, TokenKind};
-use rccx_source::{SourceFile, SourceMap};
+use rccx_pp::{preprocess, PpOptions, UserDefine as PpUserDefine};
+use rccx_source::{FileId, SourceFile, SourceMap};
 
-pub use options::{CStandard, EmitKind, Options, SafeCMode};
+pub use options::{CStandard, EmitKind, Options, SafeCMode, UserDefine};
 
 /// Compiler version reported by `--version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,11 +30,14 @@ USAGE:
 
 OPTIONS:
     -o <PATH>             Write output to <PATH>
+    -I <PATH>             Add <PATH> to the preprocessor include search list
+    -D NAME[=BODY]        Predefine NAME as a preprocessor macro (default body: 1)
     -std=<STD>            C standard (c89, c99, c11, c17, c23) [default: c17]
     -fsafe-c              Enable Safe C ownership / borrow / unsafe checks
     -fsafe-c=warn         Same as -fsafe-c, but emit warnings instead of errors
     -fno-safe-c           Disable Safe C checks (default)
-    -emit=<KIND>          Emit intermediate form: tokens, ast, hir, mir, llvm-ir, obj, asm
+    -emit=<KIND>          Emit intermediate form:
+                            tokens, pp-tokens, ast, hir, mir, llvm-ir, obj, asm
     --explain <CODE>      Print the long-form explanation for a diagnostic code
     --json-diagnostics    Render diagnostics as JSON (reserved; not yet implemented)
     -h, --help            Print this help and exit
@@ -42,6 +46,7 @@ OPTIONS:
 EXAMPLES:
     rccx hello.c -o hello
     rccx main.c -fsafe-c
+    rccx main.c -I include -DFOO=42 -emit=pp-tokens
     rccx --explain E0001
 ";
 
@@ -103,13 +108,26 @@ pub fn compile(options: &Options) -> RunResult {
                 dump_tokens(&mut emit, file, &tokens);
             }
         }
+        Some(EmitKind::PpTokens) => {
+            let pp_opts = build_pp_options(options);
+            for id in loaded_ids.clone() {
+                let (tokens, diags) = preprocess(&mut sources, id, &pp_opts);
+                for diag in diags {
+                    sink.emit(diag);
+                }
+                dump_pp_tokens(&mut emit, &sources, id, &tokens);
+            }
+        }
         _ if !loaded_ids.is_empty() => {
             sink.emit(
                 Diagnostic::error(
                     E_UNIMPLEMENTED,
-                    "compilation pipeline beyond Phase 1 is not implemented yet",
+                    "compilation pipeline beyond Phase 2 is not implemented yet",
                 )
-                .with_note("Phase 1 only wires lex + `-emit=tokens`; parser and codegen come later")
+                .with_note(
+                    "Phase 2 MVP wires lex + preprocessor + `-emit=tokens|pp-tokens`; \
+                     parser and codegen come later",
+                )
                 .with_help("see ROADMAP.md for the per-phase plan"),
             );
         }
@@ -117,6 +135,55 @@ pub fn compile(options: &Options) -> RunResult {
     }
 
     finish(sources, sink, emit)
+}
+
+fn build_pp_options(options: &Options) -> PpOptions {
+    PpOptions {
+        include_paths: options.include_paths.clone(),
+        user_defines: options
+            .user_defines
+            .iter()
+            .map(|d| PpUserDefine {
+                name: d.name.clone(),
+                body: d.body.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn dump_pp_tokens(out: &mut String, sources: &SourceMap, root: FileId, tokens: &[Token]) {
+    let root_path = sources
+        .file(root)
+        .map(|f| f.path().display().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let _ = writeln!(out, "; pp-tokens for {root_path}");
+    for tok in tokens {
+        if matches!(tok.kind, TokenKind::Eof) {
+            let _ = writeln!(out, "  [{:>4}..{:>4}) EOF", tok.span.lo, tok.span.hi);
+            continue;
+        }
+        let text = sources
+            .file(tok.span.file)
+            .and_then(|f| f.slice(tok.span))
+            .unwrap_or("");
+        let file_name = sources
+            .file(tok.span.file)
+            .map(|f| {
+                f.path()
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| f.path().display().to_string())
+            })
+            .unwrap_or_else(|| "?".to_string());
+        let _ = writeln!(
+            out,
+            "  {file_name}[{:>4}..{:>4}) {:<18} {}",
+            tok.span.lo,
+            tok.span.hi,
+            format_kind(tok.kind),
+            escape_for_dump(text),
+        );
+    }
 }
 
 fn dump_tokens(out: &mut String, file: &SourceFile, tokens: &[Token]) {
@@ -231,7 +298,7 @@ mod tests {
 
     #[test]
     fn emit_tokens_dumps_token_stream() {
-        let dir = tempdir();
+        let dir = tempdir("emit-tokens");
         let path = dir.join("hello.c");
         std::fs::write(&path, "int x = 42;\n").unwrap();
         let mut opts = Options::default();
@@ -250,9 +317,35 @@ mod tests {
         assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
     }
 
-    fn tempdir() -> PathBuf {
+    #[test]
+    fn emit_pp_tokens_runs_preprocessor() {
+        let dir = tempdir("emit-pp-tokens");
+        let header = dir.join("h.h");
+        std::fs::write(&header, "int y;\n").unwrap();
+        let main = dir.join("main.c");
+        std::fs::write(&main, "#define N 7\n#include \"h.h\"\nint x = N;\n").unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(main);
+        opts.emit = Some(EmitKind::PpTokens);
+        let result = compile(&opts);
+        assert!(result.success, "diagnostics: {}", result.render_to_string());
+        assert!(result.emit.contains("Keyword(int)"), "{}", result.emit);
+        assert!(
+            result.emit.contains("IntLiteral(Decimal) \"7\""),
+            "{}",
+            result.emit
+        );
+        // The header's identifier `y` shows up from h.h.
+        assert!(result.emit.contains("h.h["), "{}", result.emit);
+        assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    fn tempdir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
         let mut p = std::env::temp_dir();
-        p.push(format!("rccx-test-{}", std::process::id()));
+        let id = N.fetch_add(1, Ordering::Relaxed);
+        p.push(format!("rccx-driver-{}-{}-{}", tag, std::process::id(), id));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
