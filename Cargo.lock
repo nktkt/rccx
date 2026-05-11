@@ -3,6 +3,13 @@
 version = 3
 
 [[package]]
+name = "rccx_ast"
+version = "0.0.1"
+dependencies = [
+ "rccx_source",
+]
+
+[[package]]
 name = "rccx_cli"
 version = "0.0.1"
 dependencies = [
@@ -22,8 +29,10 @@ dependencies = [
 name = "rccx_driver"
 version = "0.0.1"
 dependencies = [
+ "rccx_ast",
  "rccx_diagnostics",
  "rccx_lexer",
+ "rccx_parser",
  "rccx_pp",
  "rccx_source",
 ]
@@ -33,6 +42,17 @@ name = "rccx_lexer"
 version = "0.0.1"
 dependencies = [
  "rccx_diagnostics",
+ "rccx_source",
+]
+
+[[package]]
+name = "rccx_parser"
+version = "0.0.1"
+dependencies = [
+ "rccx_ast",
+ "rccx_diagnostics",
+ "rccx_lexer",
+ "rccx_pp",
  "rccx_source",
 ]
 

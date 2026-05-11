@@ -9,11 +9,13 @@ pub mod options;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use rccx_ast as ast;
 use rccx_diagnostics::code::{E_IO_FAILED, E_NO_INPUT, E_UNIMPLEMENTED};
 use rccx_diagnostics::{render_human, Diagnostic, DiagnosticSink, Label};
 use rccx_lexer::{lex, Token, TokenKind};
+use rccx_parser::parse_module;
 use rccx_pp::{preprocess, PpOptions, UserDefine as PpUserDefine};
-use rccx_source::{FileId, SourceFile, SourceMap};
+use rccx_source::{FileId, SourceFile, SourceMap, Span};
 
 pub use options::{CStandard, EmitKind, Options, SafeCMode, UserDefine};
 
@@ -118,6 +120,29 @@ pub fn compile(options: &Options) -> RunResult {
                 dump_pp_tokens(&mut emit, &sources, id, &tokens);
             }
         }
+        Some(EmitKind::Ast) => {
+            let pp_opts = build_pp_options(options);
+            for id in loaded_ids.clone() {
+                let (tokens, pp_diags) = preprocess(&mut sources, id, &pp_opts);
+                for d in pp_diags {
+                    sink.emit(d);
+                }
+                let root_span = sources
+                    .file(id)
+                    .map(|f| Span::new(id, 0, f.text().len() as u32))
+                    .unwrap_or(Span::DUMMY);
+                let (module, parse_diags) = parse_module(&tokens, &sources, root_span);
+                for d in parse_diags {
+                    sink.emit(d);
+                }
+                let path = sources
+                    .file(id)
+                    .map(|f| f.path().display().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let _ = writeln!(emit, "; ast for {path}");
+                emit.push_str(&ast::dump(&module));
+            }
+        }
         _ if !loaded_ids.is_empty() => {
             sink.emit(
                 Diagnostic::error(
@@ -125,8 +150,8 @@ pub fn compile(options: &Options) -> RunResult {
                     "compilation pipeline beyond Phase 2 is not implemented yet",
                 )
                 .with_note(
-                    "Phase 2 MVP wires lex + preprocessor + `-emit=tokens|pp-tokens`; \
-                     parser and codegen come later",
+                    "Phase 3 MVP wires lex + preprocessor + parser + \
+                     `-emit=tokens|pp-tokens|ast`; type check and codegen come later",
                 )
                 .with_help("see ROADMAP.md for the per-phase plan"),
             );
@@ -315,6 +340,21 @@ mod tests {
         );
         assert!(result.emit.contains("Semicolon"), "{}", result.emit);
         assert!(result.emit.ends_with("EOF\n"), "{}", result.emit);
+    }
+
+    #[test]
+    fn emit_ast_runs_parser() {
+        let dir = tempdir("emit-ast");
+        let path = dir.join("hello.c");
+        std::fs::write(&path, "int main(void) { return 0; }\n").unwrap();
+        let mut opts = Options::default();
+        opts.inputs.push(path);
+        opts.emit = Some(EmitKind::Ast);
+        let result = compile(&opts);
+        assert!(result.success, "diagnostics: {}", result.render_to_string());
+        assert!(result.emit.contains("FnDef `main`"), "{}", result.emit);
+        assert!(result.emit.contains("Return"), "{}", result.emit);
+        assert!(result.emit.contains("IntLit 0"), "{}", result.emit);
     }
 
     #[test]

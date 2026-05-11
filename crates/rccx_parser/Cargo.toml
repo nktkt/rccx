@@ -1,11 +1,11 @@
 [package]
-name = "rccx_driver"
+name = "rccx_parser"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Pipeline driver for rccx."
+description = "C parser (Phase 3 MVP) for rccx."
 
 [dependencies]
 rccx_source.workspace = true
@@ -13,7 +13,6 @@ rccx_diagnostics.workspace = true
 rccx_lexer.workspace = true
 rccx_pp.workspace = true
 rccx_ast.workspace = true
-rccx_parser.workspace = true
 
 [lints]
 workspace = true
