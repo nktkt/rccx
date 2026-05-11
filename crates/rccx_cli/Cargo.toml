@@ -1,0 +1,20 @@
+[package]
+name = "rccx_cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "rccx command-line entry point."
+
+[[bin]]
+name = "rccx"
+path = "src/main.rs"
+
+[dependencies]
+rccx_driver.workspace = true
+rccx_diagnostics.workspace = true
+rccx_source.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "rccx_diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Diagnostics for rccx (codes, labels, renderers)."
+
+[dependencies]
+rccx_source.workspace = true
+
+[lints]
+workspace = true
